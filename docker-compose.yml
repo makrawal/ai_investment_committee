@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env  # Injects all keys directly into the backend container
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env  # Injects all keys directly into the frontend container
+    environment:
+      # We override the BACKEND_URL here because inside the Docker network, 
+      # the frontend needs to talk to the container named 'backend', not localhost
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
