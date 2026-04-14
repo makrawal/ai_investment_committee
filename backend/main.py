@@ -19,20 +19,27 @@ from langchain_core.output_parsers import StrOutputParser
 app = FastAPI(title="Investment Committee API")
 
 # Ensure API keys are loaded (these will be passed via Docker)
-llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 search_tool = TavilySearch(max_results=3)
 
 class PMDecision(BaseModel):
     analysis_memo: str = Field(description="A 3-paragraph investment memo.")
     recommendation: str = Field(description="Must be strictly: BUY, SELL, or HOLD.")
+    confidence_score: str = Field(description="A confidence score for the recommendation (e.g. 75%).")
+    rationale: str = Field(description="A concise reasoning summary supporting the recommendation.")
 
 # 2. Graph State & Nodes (Same logic as before)
 class CommitteeState(TypedDict):
     ticker: str
+    company_name: str
+    country: str
+    exchange: str
     quant_data: str
     news_data: str
     analysis_memo: str
     recommendation: str # Buy, Sell, or Hold
+    confidence_score: str
+    rationale: str
 
 def quant_agent(state: CommitteeState):
     """Fetches real-time financial metrics using yfinance."""
@@ -42,6 +49,9 @@ def quant_agent(state: CommitteeState):
     
     # Extracting a subset of key metrics
     
+    company_name = info.get("longName", info.get("shortName", ticker_sym))
+    exchange = info.get("exchange", "N/A")
+    country = info.get("country", "N/A")
     price = info.get("currentPrice", "N/A")
     pe = info.get("trailingPE", "N/A")
     growth = info.get("revenueGrowth", "N/A")
@@ -49,8 +59,22 @@ def quant_agent(state: CommitteeState):
     week_52_low = info.get("fiftyTwoWeekLow", "N/A")
     
     # Format beautifully for the frontend
-    md = f"**Current Price:** ${price}\n\n**P/E Ratio:** {pe}\n\n**Revenue Growth:** {growth}\n\n**52-Week High:** {week_52_high}\n\n**52-Week Low:** {week_52_low}"
-    return {"quant_data": md}
+    md = (
+        f"**Company:** {company_name}\n\n"
+        f"**Exchange:** {exchange}\n\n"
+        f"**Country:** {country}\n\n"
+        f"**Current Price:** ${price}\n\n"
+        f"**P/E Ratio:** {pe}\n\n"
+        f"**Revenue Growth:** {growth}\n\n"
+        f"**52-Week High:** {week_52_high}\n\n"
+        f"**52-Week Low:** {week_52_low}"
+    )
+    return {
+        "company_name": company_name,
+        "exchange": exchange,
+        "country": country,
+        "quant_data": md,
+    }
 
 def risk_agent(state: CommitteeState):
     """Uses the LLM to convert messy JSON search results into human-readable bullets."""
@@ -72,7 +96,13 @@ def portfolio_manager_agent(state: CommitteeState):
     """Uses structured output to guarantee a Buy/Sell/Hold verdict."""
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a CIO. Synthesize this data into a 3-paragraph investment memo. You MUST also provide a definitive Buy, Sell, or Hold recommendation."),
-        ("user", "Ticker: {ticker}\nQuant: {quant}\nNews: {news}")
+        (
+            "user",
+            "Ticker: {ticker}\nQuant: {quant}\nNews: {news}\n\n"
+            "Respond with JSON containing analysis_memo, recommendation, confidence_score, and rationale. "
+            "confidence_score should be a percentage like 75%. "
+            "rationale should be 2-3 short sentences summarizing the key drivers."
+        )
     ])
     
     # Force the LLM to return our Pydantic model
@@ -82,8 +112,10 @@ def portfolio_manager_agent(state: CommitteeState):
     })
     
     return {
-        "analysis_memo": result.analysis_memo, 
-        "recommendation": result.recommendation
+        "analysis_memo": result.analysis_memo,
+        "recommendation": result.recommendation,
+        "confidence_score": result.confidence_score,
+        "rationale": result.rationale,
     }
 
 # 3. Compile Graph
@@ -112,10 +144,15 @@ async def run_analysis(request: AnalysisRequest):
         final_state = agent_app.invoke(initial_state, config=config)
         return {
             "ticker": final_state["ticker"],
+            "company_name": final_state.get("company_name"),
+            "exchange": final_state.get("exchange"),
+            "country": final_state.get("country"),
             "quant_data": final_state.get("quant_data"),
             "news_data": final_state.get("news_data"),
             "memo": final_state.get("analysis_memo"),
-            "recommendation": final_state.get("recommendation") # Send verdict to frontend
+            "recommendation": final_state.get("recommendation"),
+            "confidence_score": final_state.get("confidence_score"),
+            "rationale": final_state.get("rationale"),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
